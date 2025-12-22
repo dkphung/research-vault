@@ -1,0 +1,212 @@
+{
+  "main": {
+    "id": "231de95ad3579aa9",
+    "type": "split",
+    "children": [
+      {
+        "id": "ab380cc1c1219b80",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "3af7d90f933b5744",
+            "type": "leaf",
+            "state": {
+              "type": "empty",
+              "state": {},
+              "icon": "lucide-file",
+              "title": "New tab"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "945beeba397af33f",
+    "type": "split",
+    "children": [
+      {
+        "id": "1f63bc7a1ed84c4f",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "e893e5dfee158147",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "byCreatedTime",
+                "autoReveal": true
+              },
+              "icon": "lucide-folder-closed",
+              "title": "Files"
+            }
+          },
+          {
+            "id": "2a89a46fdea8c9db",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "hono",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "Search"
+            }
+          },
+          {
+            "id": "acd93a93f166f0ef",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "Bookmarks"
+            }
+          }
+        ],
+        "currentTab": 1
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300
+  },
+  "right": {
+    "id": "7ce0cc0932dc690a",
+    "type": "split",
+    "children": [
+      {
+        "id": "86e7bafb3d104f38",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "9bfd446c240cd889",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "Backlinks"
+            }
+          },
+          {
+            "id": "f2591250be909776",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "file": "architecture/folder-concept-v5.md",
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "Outgoing links from folder-concept-v5"
+            }
+          },
+          {
+            "id": "6cf16f6bc5aba7a6",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "Tags"
+            }
+          },
+          {
+            "id": "d11b154b25471350",
+            "type": "leaf",
+            "state": {
+              "type": "all-properties",
+              "state": {
+                "sortOrder": "frequency",
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-archive",
+              "title": "All properties"
+            }
+          },
+          {
+            "id": "31637f09625e6150",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "architecture/folder-concept-v5.md",
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "Outline of folder-concept-v5"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:Open quick switcher": false,
+      "graph:Open graph view": false,
+      "canvas:Create new canvas": false,
+      "daily-notes:Open today's daily note": false,
+      "templates:Insert template": false,
+      "command-palette:Open command palette": false,
+      "bases:Create new base": false
+    }
+  },
+  "active": "2a89a46fdea8c9db",
+  "lastOpenFiles": [
+    "fastify-to-bun-serve-migration.md",
+    "2025-12-22.md",
+    "devops/changesets-production-release-gate.md",
+    "react-19-best-practices-and-anti-patterns.md",
+    "react-anti-patterns-comprehensive.md",
+    "react19-spa-patterns.md",
+    "codebase-modifications-analysis.md",
+    "saml-authentication-guide.md",
+    "complete-research-findings.md",
+    "clerk-jwt-graphql-gui-alternatives.md",
+    "simplesamlphp-clerk-incommon-integration.md",
+    "dockerfile-production-research.md",
+    "mdq-pdo-research.md",
+    "clerk-webhooks.md",
+    "simplesamlphp-pdo-storage-format.md",
+    "simplesamlphp-setup-tutorial.md",
+    "rss-module-onboarding.md",
+    "simplesamlphp-incommon-mdq-integration.md",
+    "cognito-to-clerk-migration.md",
+    "incommon-federation-clerk-integration.md",
+    "clerk-metadata-verification.md",
+    "nextjs16-cache-with-jwt-auth.md",
+    "kubernetes-deployment-strategies.md",
+    "aws-amplify-gen2-deployment.md",
+    "microfrontend-architecture.md",
+    "parallel-routes-vs-alternatives.md",
+    "migrate-to-flat.sh",
+    "devops"
+  ]
+}
