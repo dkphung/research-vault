@@ -1,0 +1,210 @@
+# Template GitHub Action for Subgraph Repositories
+# Place this in each subgraph repo: .github/workflows/publish-schema.yml
+#
+# This workflow publishes the GraphQL schema to the centralized location
+# whenever the schema file changes or on manual trigger.
+
+name: Publish GraphQL Schema
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'src/graphql/**/*.graphql'  # Adjust to your schema file location
+      - 'schema.graphql'
+  workflow_dispatch:
+    inputs:
+      target_branch:
+        description: 'Target branch in schemas repo'
+        required: false
+        default: 'main'
+
+env:
+  # Name of this subgraph (e.g., 'comments', 'users', 'posts')
+  SUBGRAPH_NAME: 'comments'  # ⚠️ CUSTOMIZE THIS
+
+  # Path to schema file in THIS repo
+  SCHEMA_FILE: 'src/graphql/comments.schema.graphql'  # ⚠️ CUSTOMIZE THIS
+
+  # ==========================================
+  # OPTION A: Publish to Dedicated Schemas Repo
+  # ==========================================
+  SCHEMAS_REPO: 'yourorg/graphql-schemas'
+
+  # ==========================================
+  # OPTION B: Publish to Router Repo (schemas/ folder)
+  # ==========================================
+  # ROUTER_REPO: 'yourorg/cosmo'
+  # SCHEMAS_PATH: 'schemas'
+
+jobs:
+  # ==========================================
+  # Method 1: Extract schema from file
+  # ==========================================
+  publish-from-file:
+    runs-on: ubuntu-latest
+    # Use this job if schema is checked into the repo
+    if: true  # Set to false to disable
+
+    steps:
+      - name: Checkout subgraph repo
+        uses: actions/checkout@v4
+
+      - name: Validate schema file exists
+        run: |
+          if [ ! -f "$SCHEMA_FILE" ]; then
+            echo "❌ Schema file not found: $SCHEMA_FILE"
+            exit 1
+          fi
+          echo "✅ Schema file found"
+
+      - name: Publish to schemas repository (Option A)
+        if: env.SCHEMAS_REPO != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.SCHEMAS_PUBLISH_TOKEN || secrets.GITHUB_TOKEN }}
+          TARGET_BRANCH: ${{ github.event.inputs.target_branch || 'main' }}
+        run: |
+          # Clone schemas repository
+          git clone "https://${GITHUB_TOKEN}@github.com/${SCHEMAS_REPO}.git" /tmp/schemas
+          cd /tmp/schemas
+          git checkout "$TARGET_BRANCH" || git checkout -b "$TARGET_BRANCH"
+
+          # Copy schema file
+          cp "$GITHUB_WORKSPACE/$SCHEMA_FILE" "${SUBGRAPH_NAME}.graphql"
+
+          # Update metadata file (optional)
+          cat > "${SUBGRAPH_NAME}.metadata.json" <<EOF
+          {
+            "name": "$SUBGRAPH_NAME",
+            "sourceRepo": "${{ github.repository }}",
+            "sourceBranch": "${{ github.ref_name }}",
+            "commitSha": "${{ github.sha }}",
+            "publishedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "schemaFile": "$SCHEMA_FILE"
+          }
+          EOF
+
+          # Commit and push
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add "${SUBGRAPH_NAME}.graphql" "${SUBGRAPH_NAME}.metadata.json"
+
+          if git diff --staged --quiet; then
+            echo "No schema changes detected"
+          else
+            git commit -m "Update $SUBGRAPH_NAME schema from ${{ github.sha }}"
+            git push origin "$TARGET_BRANCH"
+            echo "✅ Schema published successfully"
+          fi
+
+      - name: Publish to router repository (Option B)
+        if: env.ROUTER_REPO != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.ROUTER_REPO_TOKEN || secrets.GITHUB_TOKEN }}
+          TARGET_BRANCH: ${{ github.event.inputs.target_branch || 'main' }}
+        run: |
+          # Clone router repository
+          git clone "https://${GITHUB_TOKEN}@github.com/${ROUTER_REPO}.git" /tmp/router
+          cd /tmp/router
+          git checkout "$TARGET_BRANCH" || git checkout -b "$TARGET_BRANCH"
+
+          # Create schemas directory if it doesn't exist
+          mkdir -p "$SCHEMAS_PATH"
+
+          # Copy schema file
+          cp "$GITHUB_WORKSPACE/$SCHEMA_FILE" "${SCHEMAS_PATH}/${SUBGRAPH_NAME}.graphql"
+
+          # Commit and push
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add "${SCHEMAS_PATH}/${SUBGRAPH_NAME}.graphql"
+
+          if git diff --staged --quiet; then
+            echo "No schema changes detected"
+          else
+            git commit -m "Update $SUBGRAPH_NAME schema from ${{ github.repository }}@${{ github.sha }}"
+            git push origin "$TARGET_BRANCH"
+            echo "✅ Schema published to router repo"
+          fi
+
+  # ==========================================
+  # Method 2: Introspect from running service
+  # ==========================================
+  publish-from-introspection:
+    runs-on: ubuntu-latest
+    # Use this job if you want to extract schema from a deployed service
+    if: false  # Set to true to enable
+
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Introspect schema from service
+        env:
+          SERVICE_URL: ${{ secrets.GRAPHQL_SERVICE_URL }}
+          # e.g., https://comments.staging.example.com/graphql
+        run: |
+          echo "Introspecting schema from $SERVICE_URL"
+
+          npx get-graphql-schema "$SERVICE_URL" > /tmp/${SUBGRAPH_NAME}.graphql
+
+          echo "✅ Schema introspected successfully"
+
+          # Show first few lines
+          head -n 20 /tmp/${SUBGRAPH_NAME}.graphql
+
+      - name: Publish introspected schema
+        env:
+          GITHUB_TOKEN: ${{ secrets.SCHEMAS_PUBLISH_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          # Clone schemas repository
+          git clone "https://${GITHUB_TOKEN}@github.com/${SCHEMAS_REPO}.git" /tmp/schemas
+          cd /tmp/schemas
+
+          # Copy introspected schema
+          cp /tmp/${SUBGRAPH_NAME}.graphql .
+
+          # Commit and push
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add "${SUBGRAPH_NAME}.graphql"
+
+          if git diff --staged --quiet; then
+            echo "No schema changes detected"
+          else
+            git commit -m "Update $SUBGRAPH_NAME schema (introspected from $SERVICE_URL)"
+            git push
+            echo "✅ Schema published successfully"
+          fi
+
+  # ==========================================
+  # Trigger router recomposition (optional)
+  # ==========================================
+  trigger-router-composition:
+    needs: [publish-from-file]
+    runs-on: ubuntu-latest
+    if: success()
+
+    steps:
+      - name: Trigger router repository workflow
+        uses: actions/github-script@v7
+        env:
+          ROUTER_REPO: ${{ env.ROUTER_REPO || env.SCHEMAS_REPO }}
+        with:
+          github-token: ${{ secrets.TRIGGER_ROUTER_TOKEN || secrets.GITHUB_TOKEN }}
+          script: |
+            const [owner, repo] = process.env.ROUTER_REPO.split('/');
+
+            await github.rest.actions.createWorkflowDispatch({
+              owner,
+              repo,
+              workflow_id: 'fetch-schemas-and-compose.yml',
+              ref: 'main'
+            });
+
+            console.log('✅ Triggered router composition workflow');
