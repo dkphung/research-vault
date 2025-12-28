@@ -11,10 +11,14 @@
             "id": "3af7d90f933b5744",
             "type": "leaf",
             "state": {
-              "type": "empty",
-              "state": {},
+              "type": "markdown",
+              "state": {
+                "file": "maq-database-structure.md",
+                "mode": "source",
+                "source": false
+              },
               "icon": "lucide-file",
-              "title": "New tab"
+              "title": "maq-database-structure"
             }
           }
         ]
@@ -36,7 +40,7 @@
             "state": {
               "type": "file-explorer",
               "state": {
-                "sortOrder": "byCreatedTime",
+                "sortOrder": "byModifiedTime",
                 "autoReveal": true
               },
               "icon": "lucide-folder-closed",
@@ -49,7 +53,7 @@
             "state": {
               "type": "search",
               "state": {
-                "query": "hono",
+                "query": "changeset",
                 "matchingCase": false,
                 "explainSearch": false,
                 "collapseAll": false,
@@ -70,8 +74,7 @@
               "title": "Bookmarks"
             }
           }
-        ],
-        "currentTab": 1
+        ]
       }
     ],
     "direction": "horizontal",
@@ -91,6 +94,7 @@
             "state": {
               "type": "backlink",
               "state": {
+                "file": "maq-database-structure.md",
                 "collapseAll": false,
                 "extraContext": false,
                 "sortOrder": "alphabetical",
@@ -100,7 +104,7 @@
                 "unlinkedCollapsed": true
               },
               "icon": "links-coming-in",
-              "title": "Backlinks"
+              "title": "Backlinks for maq-database-structure"
             }
           },
           {
@@ -178,10 +182,14 @@
       "bases:Create new base": false
     }
   },
-  "active": "2a89a46fdea8c9db",
+  "active": "3af7d90f933b5744",
   "lastOpenFiles": [
-    "fastify-to-bun-serve-migration.md",
+    "maq-top-down-data-trace.md",
+    "maq-database-structure.md",
+    "changesets-production-release-gate.md",
+    "materialized-permissions-implementation.md",
     "2025-12-22.md",
+    "fastify-to-bun-serve-migration.md",
     "devops/changesets-production-release-gate.md",
     "react-19-best-practices-and-anti-patterns.md",
     "react-anti-patterns-comprehensive.md",
@@ -202,10 +210,6 @@
     "incommon-federation-clerk-integration.md",
     "clerk-metadata-verification.md",
     "nextjs16-cache-with-jwt-auth.md",
-    "kubernetes-deployment-strategies.md",
-    "aws-amplify-gen2-deployment.md",
-    "microfrontend-architecture.md",
-    "parallel-routes-vs-alternatives.md",
     "migrate-to-flat.sh",
     "devops"
   ]
