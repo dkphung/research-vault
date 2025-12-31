@@ -4,21 +4,17 @@
     "type": "split",
     "children": [
       {
-        "id": "ab380cc1c1219b80",
+        "id": "521865df810ca050",
         "type": "tabs",
         "children": [
           {
-            "id": "3af7d90f933b5744",
+            "id": "11e40a7910434566",
             "type": "leaf",
             "state": {
-              "type": "markdown",
-              "state": {
-                "file": "maq-database-structure.md",
-                "mode": "source",
-                "source": false
-              },
+              "type": "empty",
+              "state": {},
               "icon": "lucide-file",
-              "title": "maq-database-structure"
+              "title": "New tab"
             }
           }
         ]
@@ -40,7 +36,7 @@
             "state": {
               "type": "file-explorer",
               "state": {
-                "sortOrder": "byModifiedTime",
+                "sortOrder": "byCreatedTime",
                 "autoReveal": true
               },
               "icon": "lucide-folder-closed",
@@ -94,7 +90,6 @@
             "state": {
               "type": "backlink",
               "state": {
-                "file": "maq-database-structure.md",
                 "collapseAll": false,
                 "extraContext": false,
                 "sortOrder": "alphabetical",
@@ -104,7 +99,7 @@
                 "unlinkedCollapsed": true
               },
               "icon": "links-coming-in",
-              "title": "Backlinks for maq-database-structure"
+              "title": "Backlinks"
             }
           },
           {
@@ -182,10 +177,21 @@
       "bases:Create new base": false
     }
   },
-  "active": "3af7d90f933b5744",
+  "active": "e893e5dfee158147",
   "lastOpenFiles": [
-    "maq-top-down-data-trace.md",
+    "maq-complete-guide 2.md",
+    "maq-complete-guide.md",
+    "2025-12-28.md",
+    "Untitled.canvas",
+    "MAQ.canvas",
     "maq-database-structure.md",
+    "maq-top-down-data-trace.md",
+    "maq-bottom-up-data-trace.md",
+    "maq-visual-data-map.md",
+    "maq-snowflake-migration-options.md",
+    "maq-fire-code-compliance-validation.md",
+    "maq-guide.md",
+    "maq-101.md",
     "changesets-production-release-gate.md",
     "materialized-permissions-implementation.md",
     "2025-12-22.md",
@@ -201,15 +207,6 @@
     "simplesamlphp-clerk-incommon-integration.md",
     "dockerfile-production-research.md",
     "mdq-pdo-research.md",
-    "clerk-webhooks.md",
-    "simplesamlphp-pdo-storage-format.md",
-    "simplesamlphp-setup-tutorial.md",
-    "rss-module-onboarding.md",
-    "simplesamlphp-incommon-mdq-integration.md",
-    "cognito-to-clerk-migration.md",
-    "incommon-federation-clerk-integration.md",
-    "clerk-metadata-verification.md",
-    "nextjs16-cache-with-jwt-auth.md",
     "migrate-to-flat.sh",
     "devops"
   ]
