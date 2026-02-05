@@ -534,245 +534,1166 @@ queries lives in the task itself.
 
 ---
 
-## Open Questions
+## Design Decisions
 
-### Outcome Service
+The following sections resolve the open questions from earlier exploration.
+Each takes a position with rationale. Decisions are grouped by concern area
+and reference the original question numbers for traceability.
 
-**1. What does the Outcome Service look like?**
+---
 
-The Outcome Service is the bridge between "a form was completed" and "things
-need to happen." It interprets form results and triggers actions.
+## Outcome Service Design
 
-- Is it a standalone service, or logic within the Form Service?
-- How are outcomes configured? Per template? Per form instance? Per folder?
-- What outcomes exist beyond "require acknowledgement" and "require training"?
-  (e.g., "flag for review", "generate report", "restrict lab access")
-- Does it need to be idempotent? (What if the same form completion is
-  processed twice?)
+*Resolves questions 1–4.*
 
-**2. How does the Outcome Service know the folder context?**
+### Position: Standalone service, outcome rules configured per template
 
-When Alice completes Lab 1's assessment, the Outcome Service needs to know
-"this belongs to Lab 1" so it can query Lab 1's members. But the form itself
-might not store `folderId`. Does:
+The Outcome Service is a **standalone service** — not logic embedded in the
+Form Service. The Form Service's job ends when it stores answers. What those
+answers *mean* is a separate concern. Keeping them apart means:
 
-- The original task carry the folder context, and is it passed through when
-  the form is created?
-- The form store metadata about where it came from?
-- The Outcome Service receive the folder context as part of the completion
-  event?
+- Form templates can be reused across contexts without carrying outcome logic
+- Outcome rules can change without redeploying or modifying the Form Service
+- The Form Service remains a pure data-entry tool
 
-**3. Can a single form produce multiple different outcome types?**
+### How outcomes are configured
 
-Lab 3's assessment might produce both "require acknowledgement" AND "require
-training." Are these separate outcomes evaluated independently? Can they
-fail independently? (e.g., acknowledgement tasks created successfully but
-training tasks fail — what happens?)
-
-**4. Are outcomes immediate or eventual?**
-
-When a form is submitted, do outcomes fire synchronously (blocking the form
-submission response) or asynchronously (queued for later processing)?
-Synchronous is simpler but means a slow outcome blocks the user.
-Asynchronous is more resilient but harder to report errors.
-
-### Task Completion
-
-**5. Who marks a task complete?**
-
-When a form is submitted, how does the assignment service know the task is
-done? Options:
-
-- **The Form Service calls back** — form submission triggers `completeTask`.
-  Form Service needs to know about the assignment service.
-- **The UI calls both** — after form submission, the UI calls `completeTask`.
-  Simple but relies on the client not failing between the two calls.
-- **Event-based** — Form Service emits "form.submitted", a listener marks
-  the task complete. Decoupled but needs event infrastructure.
-
-The answer might differ per task type. Form tasks and acknowledgement tasks
-might use one pattern; training tasks might use another.
-
-**6. How does training completion flow back?**
-
-Training lives in a separate platform (LMS) that we may not control. How
-does the assignment service learn that Bob finished "Hazardous Materials
-Training"?
-
-- **The LMS calls back** — LMS has a webhook/API that calls `completeTask`
-  when a course is finished. LMS needs to know about assignment.
-- **Polling** — something periodically checks the LMS and updates tasks.
-  Decoupled but introduces latency.
-- **The UI bridges it** — after completing training, the user returns to the
-  assignment UI and clicks "mark complete." Simple but relies on the user.
-- **Event-based** — LMS emits "course.completed", a listener marks the task.
-
-This is the same question as #5 but across a service boundary we don't
-control. The answer might need to be different per consumer.
-
-**7. What if a task is completed but the consumer doesn't confirm?**
-
-If the UI calls `completeTask` but the form submission fails (or vice versa),
-the task status and the actual work are out of sync. How is this reconciled?
-
-- Retry logic?
-- A periodic reconciliation job that checks task status against consumer
-  status?
-- Accept eventual consistency and let users manually fix mismatches?
-
-### Task Model
-
-**8. How does the reference schema work?**
-
-Each action type has different reference data:
+Outcome rules live on the **form template** (or template group), not on
+individual form instances or folders. A template author defines: "when this
+form is completed and the answers match these conditions, produce these
+outcomes."
 
 ```
-complete-form:     { templateGroupId }
-acknowledge-form:  { formId }
-complete-training: { courseId }
+OutcomeRule:
+  templateGroupId:  "lab-safety-assessment-v2"
+  condition:        expression evaluated against form answers
+  outcomeType:      "require-acknowledgement" | "require-training" | "flag-for-review" | ...
+  config:           { ... outcome-specific data }
 ```
 
-Is the reference a strongly-typed discriminated union (each action type has
-a known shape)? Or is it a loosely-typed JSON blob that the assignment service
-stores without validation? Tradeoffs:
+**Why per template, not per folder?** Because the outcome is a property of
+*what was reported*, not *where it was reported*. Lab 1 and Lab 3 use the
+same template — but Lab 3's answers trigger training because of the chemical
+class reported, not because of anything special about Lab 3's folder.
 
-- **Strongly typed** — safer, but requires assignment service changes for
-  every new action type
-- **Loosely typed (JSON)** — flexible, but no validation at the assignment
-  layer. Consumers must handle bad data.
+Folder-level overrides are possible but should be the exception. If a campus
+wants a stricter policy ("always require training for any lab in this
+building"), that's a folder-level rule *layered on top of* the template rules,
+not a replacement. This mirrors the folder-concept-v5 property inheritance
+pattern: closest scope wins, global rules provide defaults.
 
-**9. Template version pinning**
+### Known outcome types
 
-When a CompleteFormTask is created, should it pin to a specific template
-version? If the template is updated between assignment and completion, the
-user might get a different form than intended.
+| Outcome Type              | What it does                                           |
+| ------------------------- | ------------------------------------------------------ |
+| `require-acknowledgement` | Create acknowledge-form tasks for folder members       |
+| `require-training`        | Create complete-training tasks for folder members      |
+| `flag-for-review`         | Create a review task for a designated reviewer role     |
+| `generate-report`         | Trigger a report generation job (no task created)       |
+| `restrict-access`         | Call Folder Service to modify access (no task created)  |
 
-- Store `templateId` (specific version) alongside `templateGroupId`?
-- Let the consumer always use the latest? (Simpler, but risky)
-- Let the caller decide? (Pass both, consumer chooses)
+Not all outcomes create tasks. Some trigger side effects in other services.
+The Outcome Service is the router — it evaluates rules and dispatches to
+the appropriate service.
 
-**10. Should a task carry a human-readable description of the action?**
+### Folder context flows through the task
 
-The action + reference is enough for a consumer to act, but is it enough for
-a UI to display? "complete-training / courseId: hazmat-101" isn't
-user-friendly. Should the task also carry:
+When the original `complete-form` task is created, it carries `folderId`.
+When Alice opens the task and the Form Service creates a form instance, the
+form stores the `taskId` (or at minimum `folderId`) as metadata. When the
+form is submitted, the completion event includes this context:
 
-- A display name? (e.g., "Hazardous Materials Training")
-- A description? (e.g., "Required due to chemical handling in Lab 3")
-- A URL or deep link to where the user should go?
+```
+FormCompleted event:
+  formId:           "form-abc-123"
+  templateGroupId:  "lab-safety-assessment-v2"
+  completedBy:      "alice"
+  folderId:         "lab-1"          ← carried from the original task
+  answers:          { ... }
+```
 
-Or is this the consumer's responsibility to resolve from the reference?
+The Outcome Service receives `folderId` as part of this event. It never
+needs to guess or look up where the form came from — the context is
+**threaded through from task → form → completion event → outcome evaluation**.
 
-### Fan-Out and Scope
+This is the simplest approach and avoids a reverse-lookup problem. The form
+doesn't need to "know about" folders in a deep way — it just passes metadata
+through.
 
-**11. Who coordinates the fan-out?**
+### Multiple outcomes from a single form
 
-When an admin assigns assessments to all child folders, something needs to
-iterate over folders and users. Options:
+**Yes — a single form can produce multiple independent outcomes.** Lab 3's
+assessment might produce both "require acknowledgement" and "require
+training." These are evaluated and executed **independently**:
 
-- **Folder Service** — knows the hierarchy, calls assignment per person
-- **Frontend / BFF** — queries folders, then calls assignment
-- **Assignment Service** — accepts "assign to folder children" and queries
-  folders itself
+```
+Outcome evaluation for Lab 3's completed assessment:
+  Rule 1: condition matches → require-acknowledgement → create 2 tasks ✅
+  Rule 2: condition matches → require-training         → create 2 tasks ✅
+  Rule 3: condition fails  → flag-for-review           → skip
+```
 
-The assignment service staying thin (Option 1 or 2) keeps it simple but
-means the fan-out logic lives elsewhere.
+Each outcome is processed in isolation. If acknowledgement tasks are created
+successfully but training task creation fails, the acknowledgement tasks
+still stand. The failed outcome is retried independently.
 
-**12. Bulk operations**
+This means the Outcome Service processes outcomes as a **list of independent
+effects**, not an all-or-nothing transaction. Partial success is acceptable
+because each outcome is independently meaningful — Bob's acknowledgement task
+doesn't depend on Grace's training task.
 
-The fan-out use case creates many tasks at once. Should the assignment
-service have a bulk `createTasks` endpoint? Or is creating them one at a
-time sufficient?
+### Outcomes are eventual, not immediate
 
-- 3 labs with 5 people each → 15 tasks, one-at-a-time is fine
-- 100 folders with 50 people each → 5,000 tasks, needs bulk or async
+**Asynchronous processing.** When a form is submitted:
 
-At what scale does this matter? Should it be synchronous or fire-and-forget?
+1. The Form Service stores the answers and returns success to the user
+2. The Form Service emits a `form.completed` event
+3. The Outcome Service picks up the event and evaluates rules
+4. For each matching rule, the Outcome Service dispatches the effect
 
-**13. What about late-joiners?**
+The user sees "form submitted successfully" immediately. Outcome processing
+happens in the background. This means:
 
-If a new member joins Lab 1 after the acknowledgement tasks were created,
-do they automatically get an acknowledgement task? Or does someone need to
-manually assign them?
+- A slow outcome (e.g., creating 50 acknowledgement tasks) doesn't block
+  the user
+- If the Outcome Service is temporarily down, the event is queued and
+  processed when it recovers
+- The user doesn't see "your form triggered 3 outcomes" in real-time (this
+  is fine — outcomes are an admin concern, not the submitter's concern)
 
-This is a gap in any point-in-time fan-out approach. Options:
-- **Manual** — someone notices and creates a task for the new member
-- **Folder Service watches membership changes** — when a member is added,
-  check if there are outstanding assignments for that folder and create tasks
-- **Periodic reconciliation** — a job compares folder membership against
-  existing tasks and fills gaps
+**Idempotency is required.** Because events can be delivered more than once
+(at-least-once delivery), the Outcome Service must be idempotent. Each
+outcome evaluation should check: "have I already processed this form
+completion?" A simple approach: store a `processedEventId` for each outcome
+execution and skip duplicates.
 
-**14. What about re-assignment?**
+```
+Before creating tasks:
+  if outcomeAlreadyProcessed(formId, outcomeRuleId):
+    skip (already handled)
+  else:
+    create tasks
+    markOutcomeProcessed(formId, outcomeRuleId)
+```
 
-If a task is UNASSIGNED, can it be reassigned to someone else? Or is it a
-new task? The current model doesn't support changing `assignedTo` — unassign
-creates a new state, not a transfer.
+---
 
-### Tracking and Rollup
+## Task Completion Patterns
 
-**15. How does "full completion" work as a derived status?**
+*Resolves questions 5–7.*
 
-The Program Manager wants to know: "is Lab 1 fully acknowledged?" This is
-a derived state — all acknowledgement tasks for that folder are COMPLETED.
-Should this be:
+### Position: The consumer marks the task complete — pattern varies by boundary
 
-- **Computed on query** — count completed vs total tasks per folder
-- **A status on a parent entity** — something tracks the rollup
-- **A separate entity** — a "campaign status" record
+There's no single answer because the completion boundary differs per task
+type. The guiding principle: **whoever knows the action is truly done is
+responsible for marking the task complete.**
 
-Computing on query is simplest and doesn't require any new concepts. It
-works as long as the number of tasks per folder is manageable.
+### Internal consumers (Form Service): server-side callback
 
-**16. How do you track progress across different outcome types?**
+For `complete-form` and `acknowledge-form` tasks, the Form Service is the
+consumer. When a form is submitted:
 
-Lab 3 has both acknowledgement AND training tasks. The Program Manager wants
-to see Lab 3's overall compliance status. Is this:
+1. User submits form in the UI
+2. UI calls Form Service: `submitForm(formId, answers)`
+3. Form Service stores the answers
+4. Form Service calls Assignment Service: `completeTask(taskId)`
+5. Form Service emits `form.completed` event (for outcomes)
+6. Form Service returns success to the UI
 
-- Separate queries per action type, displayed side by side?
-- A combined view that shows all outstanding tasks regardless of type?
-- A "compliance score" that aggregates across types?
+The Form Service makes the `completeTask` call **server-side, as part of
+form submission.** This is a direct service-to-service call, not a UI
+responsibility. The Form Service already knows the `taskId` because it was
+passed when the form was created (or stored as form metadata).
 
-**17. Should there be a "campaign" or "rollout" entity?**
+**Why not the UI?** Because the UI calling two services creates a
+partial-failure window. If the form submits successfully but the
+`completeTask` call fails (network error, timeout), the form is done but the
+task still shows as assigned. Server-side is more reliable.
 
-When the admin assigns an assessment to all labs, is there a concept of a
-"campaign" that groups all resulting tasks (assessments, acknowledgements,
-training)? Useful for:
+**Why not event-based?** For internal services we control, a direct call is
+simpler and provides immediate consistency. Events add infrastructure
+overhead for a problem that a direct call solves. The Form Service already
+has a dependency path to the Assignment Service — it reads task data to
+create forms, so calling `completeTask` is not a new coupling.
 
-- "What's the overall completion rate for this rollout?"
-- "Remind everyone with outstanding tasks from this rollout"
-- "Cancel all tasks from this rollout"
+```
+Form Service (server-side):
+  submitForm(formId, answers):
+    store answers
+    completeTask(task.id)          ← direct call to Assignment Service
+    emit "form.completed" event    ← for Outcome Service (async)
+    return success
+```
 
-This could be a `campaignId` on each task, or it could be implicit (query
-by template + folder + time range).
+### External consumers (LMS): adapter + webhook or polling
 
-### Notifications
+For `complete-training` tasks, the consumer is an LMS we may not control.
+The pattern depends on what the LMS supports:
 
-**18. What goes in the notification link?**
+**Option A: Webhook from LMS (preferred if available)**
 
-The task carries enough data for a basic notification. But the link varies
-by action type:
+```
+LMS → Webhook → Training Adapter → Assignment Service.completeTask()
+```
 
-- Acknowledge-form → can link directly to the form (formId exists)
-- Complete-form → no form yet. Link to the task? A landing page?
-- Complete-training → link to the LMS course page?
+A **Training Adapter** sits between the LMS and the Assignment Service. The
+adapter receives LMS webhooks, maps the LMS completion record to the
+corresponding task, and calls `completeTask`. The adapter owns the mapping
+between LMS course IDs and assignment task IDs.
 
-Does the task store a URL, or does the notification service resolve it from
-the action + reference?
+**Option B: Polling (fallback)**
 
-**19. Should notifications be customizable per action type?**
+```
+Training Adapter (cron):
+  for each ASSIGNED training task:
+    check LMS API for completion status
+    if completed: completeTask(taskId)
+```
 
-"You have a new form to complete" vs "You have a training course to complete"
-are different messages. Does the notification template come from:
+Polling introduces latency (minutes to hours) but doesn't require the LMS
+to support webhooks. Acceptable for training completions that aren't
+time-critical.
 
-- The action type? (Each action type has a default notification template)
-- The caller? (Whoever creates the task provides the notification config)
-- The task itself? (Task carries a `notificationTemplate` field)
+**Option C: User self-reports (simplest, lowest confidence)**
 
-**20. Should there be reminder notifications?**
+The user completes training in the LMS, returns to the assignment UI, and
+clicks "I completed this." The system could optionally verify against the LMS
+before marking complete.
 
-If a task stays in ASSIGNED status for a long time, should the system send
-reminders? If so:
+The recommended approach: **start with Option C for MVP, add Option A/B as
+integrations mature.** Self-reporting gets the workflow moving; automated
+verification adds confidence later.
 
-- Who configures the reminder schedule? The admin? The template?
-- Is this the assignment service's job or the notification service's job?
-- Does the task carry reminder configuration, or is it a system-wide policy?
+### Reconciliation for out-of-sync states
+
+When the task status and consumer state diverge (task says ASSIGNED but form
+was actually submitted, or task says COMPLETED but consumer has no record):
+
+**Position: Accept eventual consistency + periodic reconciliation.**
+
+A reconciliation job runs periodically (daily or on-demand) and checks:
+
+```
+Reconciliation:
+  for each ASSIGNED task older than X days:
+    check consumer for completion evidence:
+      complete-form:     does a submitted form instance exist for this task?
+      acknowledge-form:  does an acknowledgement record exist for this formId + userId?
+      complete-training: does the LMS show completion for this courseId + userId?
+    if evidence found:
+      completeTask(taskId)
+      log: "reconciled task {taskId} — was completed but not marked"
+```
+
+This is a safety net, not the primary mechanism. The primary mechanism (Form
+Service callback or LMS adapter) should work almost all the time.
+Reconciliation catches the edge cases: network blips, partial failures,
+manual completions outside the normal flow.
+
+Users can also manually mark tasks complete via the UI (with appropriate
+permissions). This covers the case where automated reconciliation can't find
+evidence but the user knows the work is done.
+
+---
+
+## Task Model: References and Display
+
+*Resolves questions 8–10.*
+
+### Position: Loosely-typed reference with required display fields
+
+### Reference as opaque JSON
+
+The `reference` field is a **JSON object that the Assignment Service stores
+without validation.** The Assignment Service doesn't interpret the reference —
+it stores it and returns it. Consumers validate and interpret it.
+
+```
+reference: { templateGroupId: "lab-safety-v2" }    ← complete-form
+reference: { formId: "form-abc-123" }               ← acknowledge-form
+reference: { courseId: "hazmat-101" }                ← complete-training
+reference: { inspectionId: "insp-789", ... }        ← future: some new type
+```
+
+**Why loosely typed?** Because the Assignment Service is intentionally thin.
+Adding a new task type should not require a deployment of the Assignment
+Service. The caller provides the reference; the consumer interprets it. The
+Assignment Service is a pass-through store for this field.
+
+**What about bad data?** The Assignment Service validates structural
+requirements (reference must be a non-empty JSON object) but not semantic
+ones. If a caller passes `{ templateGroupId: "nonexistent" }`, the task is
+created successfully — the error surfaces when the consumer tries to act on
+it. This is acceptable because:
+
+- The caller (Outcome Service, admin UI, etc.) is the one with context to
+  validate references
+- The Assignment Service can't validate references without knowing about
+  every consumer's data model
+- A task with a bad reference is still a valid record ("Bob was asked to do
+  something") — the consumer reports the problem when Bob tries to act
+
+### Template version pinning
+
+**Store both `templateGroupId` and `templateId` in the reference.** The
+caller provides the specific version at assignment time. The consumer uses
+the pinned version by default.
+
+```
+reference: {
+  templateGroupId: "lab-safety-assessment",
+  templateId:      "lab-safety-assessment-v2.3"
+}
+```
+
+**Why pin?** Because the admin assigned a specific assessment. If the
+template is updated to v2.4 between assignment and completion, the user
+should fill out the version they were assigned, not a surprise new version
+with different questions. Pinning is a compliance concern — the assessment
+assigned on January 15 should be the assessment completed on February 3.
+
+**Consumer behavior:** The Form Service reads the `templateId` from the
+reference and creates a form from that specific version. If the version no
+longer exists (deleted or archived), the Form Service shows an error and the
+task may need to be reassigned with the new template.
+
+**If the caller doesn't provide a version?** The consumer falls back to
+latest. This handles the case where version pinning isn't important (e.g.,
+a simple acknowledgement form that rarely changes).
+
+### Display fields on the task
+
+**Yes — tasks carry display metadata.** The task includes a `name` and
+optional `description` set by the caller at creation time:
+
+```
+Task:
+  action:      "complete-training"
+  reference:   { courseId: "hazmat-101" }
+  name:        "Hazardous Materials Training"
+  description: "Required for all members of labs handling Class 3 chemicals"
+```
+
+**Why not resolve from the reference at display time?** Because:
+
+1. The UI would need to call the consumer service (LMS, Form Service) just
+   to display a task name. This creates a runtime dependency for a read-heavy
+   operation (task lists).
+2. If the consumer is slow or down, the task list breaks.
+3. The name might be context-specific: "Required due to chemical handling in
+   Lab 3" is richer than the generic course title.
+
+**The tradeoff:** Display data is denormalized. If the course name changes
+from "Hazardous Materials Training" to "Chemical Safety Training," existing
+tasks still show the old name. This is acceptable — the task represents a
+point-in-time assignment. What was assigned doesn't change retroactively.
+
+The `name` field is **required** (the Assignment Service enforces this). The
+`description` field is **optional**. Neither replaces the `reference` — the
+consumer still uses the reference to do its job.
+
+---
+
+## Fan-Out, Scope, and Membership Changes
+
+*Resolves questions 11–14.*
+
+### Position: BFF coordinates fan-out, assignment service accepts bulk
+
+### Fan-out coordination: the BFF
+
+The **BFF (Backend for Frontend)** — or an API gateway / orchestration layer
+— coordinates the fan-out. Not the Folder Service, not the Assignment
+Service.
+
+```
+BFF (handling admin's "assign to all labs" action):
+  children = FolderService.getChildFolders("lab-safety-program")
+  tasks = []
+  for each child:
+    pis = FolderService.getRoleMembers(child.id, "PI")
+    for each pi:
+      tasks.push({ assignedTo: pi, action: "complete-form", reference: {...}, folderId: child.id })
+  AssignmentService.createTasks(tasks)     ← bulk call
+```
+
+**Why the BFF?**
+
+- **Not the Folder Service** — the Folder Service knows about hierarchy and
+  membership, but calling the Assignment Service isn't its concern. Adding
+  assignment logic to the Folder Service couples two independent domains.
+  The Folder Service shouldn't know about tasks, templates, or notifications.
+
+- **Not the Assignment Service** — the Assignment Service shouldn't query
+  the Folder Service. It would need to know about folder hierarchies, roles,
+  and membership — all concerns it currently avoids. "Assign to all children"
+  is an orchestration concern, not a storage concern.
+
+- **The BFF** — it's already the place where user intent ("assign to all
+  labs") gets translated into service calls. It queries the Folder Service
+  for structure, then calls the Assignment Service with concrete tasks. This
+  keeps both services thin and focused.
+
+### Bulk creation endpoint
+
+**Yes — the Assignment Service should have a bulk `createTasks` endpoint.**
+
+```
+Commands:
+  createTask(who, what, where)       → Task
+  createTasks([{who, what, where}])  → [Task]     ← batch variant
+```
+
+The bulk endpoint:
+- Accepts an array of task creation requests
+- Validates each independently
+- Stores all in a single database transaction (or batch write)
+- Triggers notifications asynchronously (not inline — fan-out of 50 tasks
+  shouldn't mean 50 synchronous notification calls)
+- Returns the list of created tasks (or partial success with errors)
+
+**At what scale does this matter?** Even at the 15-task level (3 labs × 5
+people), a single bulk call is better than 15 individual calls. At the
+5,000-task level, it's essential. The endpoint should handle up to a
+reasonable batch size (e.g., 500 tasks per call) and the BFF can chunk
+larger fan-outs.
+
+**Notifications for bulk tasks are queued, not inline.** Task creation
+returns immediately. Notifications are dispatched asynchronously — the
+Notification Service handles its own delivery pace.
+
+```
+AssignmentService.createTasks(tasks):
+  validate each task
+  batch insert into database
+  queue notification events for each task    ← async
+  return created tasks
+```
+
+### Late-joiners
+
+**Position: Membership-change events trigger task backfill.** When a new
+member joins a folder, the system checks for outstanding assignments and
+creates tasks as needed.
+
+The mechanism:
+
+1. Folder Service emits a `member.added` event when someone joins a folder
+2. A listener (part of the BFF or a dedicated reconciliation service)
+   receives the event
+3. The listener queries: "are there any active assignment campaigns for this
+   folder that this new member should participate in?"
+4. If yes, create the missing tasks
+
+```
+On member.added(folderId, userId):
+  activeCampaigns = getActiveCampaignsForFolder(folderId)
+  for each campaign:
+    if userDoesNotHaveTask(userId, campaign):
+      createTask(userId, campaign.action, campaign.reference, folderId)
+```
+
+This requires the concept of "active campaigns" (see Tracking section below)
+to know *what* tasks should exist for a folder. Without it, the system has
+no way to know that the new member should get an acknowledgement task.
+
+**Alternative: Manual assignment.** For V1, it may be acceptable for the
+admin or PI to manually assign tasks to new members. The late-joiner
+automation is a V2 enhancement that depends on the campaign concept being
+in place.
+
+### Re-assignment
+
+**Position: Unassign + create new task. No mutation of `assignedTo`.**
+
+A task is a record of "we asked Bob to do X." If Bob can no longer do it,
+that record doesn't change — Bob was asked, and the task was unassigned.
+A new task is created for Carol.
+
+```
+unassignTask(taskId: "task-1")
+  → task-1: Bob, UNASSIGNED
+
+createTask(who: Carol, ...)
+  → task-2: Carol, ASSIGNED
+```
+
+**Why not mutate?** Because the task history should be auditable. "We
+assigned Bob, then unassigned him, then assigned Carol" is more informative
+than "Carol has a task" with no history of Bob's involvement. The audit
+trail matters in compliance contexts.
+
+The `unassignTask` operation records *who* unassigned and *when*. The new
+task is a separate record. Linking them (optional `replacesTaskId` field)
+is possible but not required for the core model.
+
+---
+
+## Tracking, Rollup, and Campaigns
+
+*Resolves questions 15–17.*
+
+### Position: Compute on query for rollup, introduce a lightweight campaign entity
+
+### Full completion as a derived status
+
+**Computed on query.** "Is Lab 1 fully acknowledged?" is answered by:
+
+```
+tasks = tasksByFolder("lab-1", type: "acknowledge-form")
+total = tasks.length
+completed = tasks.filter(t => t.status == "COMPLETED").length
+fullyAcknowledged = (completed == total)
+```
+
+No separate rollup entity. No materialized status. The task collection IS
+the source of truth.
+
+**Why not materialize?** Because the set of tasks can change — new tasks
+can be added (late-joiners), tasks can be unassigned. A materialized rollup
+would need to be updated on every task state change, which is the same
+work as computing it on read, but with the added complexity of keeping the
+rollup in sync.
+
+**Performance concern:** For large folders (100+ tasks), this query is still
+fast — it's a single-table filter on `folderId` + `taskType` + `status`.
+With proper indexes, this is sub-millisecond. No cross-service calls needed
+because all the data lives in the task record.
+
+The UI can show progress as a fraction or percentage:
+
+```
+Lab 1 Acknowledgement: 1/2 (50%)
+Lab 3 Training:        0/2 (0%)
+Lab 3 Acknowledgement: 2/2 (100%) ✅
+```
+
+### Cross-type progress tracking
+
+**Separate queries per action type, displayed side by side.** The Program
+Manager sees a dashboard like:
+
+```
+                   Assessment    Acknowledgement    Training
+Lab 1              ✅ 1/1        ⏳ 1/2             —
+Lab 2              ✅ 1/1        —                  —
+Lab 3              ⏳ 0/1        ⏳ 0/2             ⏳ 0/2
+```
+
+Each column is an independent query: `tasksByFolder(folderId, type)`.
+
+**Why not a combined "compliance score"?** Because different action types
+have different weights and meanings. Lumping them into a single number
+("Lab 3 is 40% compliant") obscures which specific obligations are
+outstanding. The admin needs to know *what's* missing, not just *how much*.
+
+A combined "all outstanding tasks" view is also useful — "Lab 3 has 5
+outstanding tasks" — but it complements the per-type view, doesn't replace
+it.
+
+### The campaign entity
+
+**Yes — introduce a lightweight campaign.** A campaign represents a
+deliberate act of assignment that may produce cascading tasks. It groups
+related tasks for tracking and management.
+
+```
+Campaign:
+  id:               unique identifier
+  name:             "Q1 2025 Lab Safety Assessment"
+  initiatedBy:      userId (the admin who started it)
+  initiatedOn:      timestamp
+  templateGroupId:  "lab-safety-assessment-v2"
+  targetFolderId:   "lab-safety-program"    (the parent folder targeted)
+  status:           ACTIVE | COMPLETED | CANCELLED
+```
+
+Each task created as part of this campaign carries the `campaignId`:
+
+```
+Task:
+  ...
+  campaignId:  "campaign-abc"    ← links back to the campaign
+```
+
+This includes both the direct tasks (assessments to PIs) and the cascading
+tasks (acknowledgements and training created by outcomes). The Outcome
+Service receives the `campaignId` through the same context-threading
+mechanism as `folderId` — it's carried from task → form → completion event
+→ outcome evaluation → new task creation.
+
+### What the campaign enables
+
+| Query                                          | How                                           |
+| ---------------------------------------------- | --------------------------------------------- |
+| "What's the completion rate for this rollout?"  | `tasksByCampaign(campaignId)` → compute %     |
+| "Remind everyone with outstanding tasks"        | Filter ASSIGNED tasks by campaignId → notify  |
+| "Cancel all tasks from this rollout"            | Bulk unassign by campaignId                   |
+| "Which campaigns are active for this folder?"   | Used by late-joiner logic                     |
+| "History of rollouts for this program"          | List campaigns by targetFolderId              |
+
+### Campaign is not a workflow engine
+
+The campaign is a **grouping mechanism**, not an orchestrator. It doesn't
+control the order of task creation, manage dependencies between tasks, or
+enforce completion sequences. It's a label that connects related tasks for
+querying and bulk operations.
+
+The campaign status is derived:
+- **ACTIVE** — at least one task in the campaign is ASSIGNED
+- **COMPLETED** — all tasks are COMPLETED (or UNASSIGNED)
+- **CANCELLED** — admin explicitly cancelled the campaign (all remaining
+  ASSIGNED tasks are bulk-unassigned)
+
+---
+
+## Notification Design
+
+*Resolves questions 18–20.*
+
+### Position: Task links resolve through a URL builder, notifications keyed by action type
+
+### Notification links
+
+The task does **not** store a URL. URLs are environment-specific (staging vs
+production), change over time, and are a presentation concern. Instead, the
+Notification Service resolves the link from the task's `action` and
+`reference` using a **URL builder**.
+
+```
+URL Builder (within Notification Service or shared utility):
+  buildTaskUrl(task):
+    switch task.action:
+      "complete-form":
+        return `/tasks/${task.id}`
+        // Landing page that creates the form on first visit
+      "acknowledge-form":
+        return `/forms/${task.reference.formId}/acknowledge`
+        // Direct link to the form
+      "complete-training":
+        return LMS.courseUrl(task.reference.courseId)
+        // Deep link to the LMS course
+      default:
+        return `/tasks/${task.id}`
+        // Fallback: generic task page
+```
+
+For `complete-form` tasks, there's no form instance yet. The link goes to a
+**task landing page** that:
+1. Shows the task details
+2. Creates a form instance from the template (if one doesn't exist yet)
+3. Redirects to the form
+
+This is a UI concern — the task landing page is the universal entry point
+for any task, regardless of type. It reads the task, determines the action,
+and routes the user to the right experience.
+
+### Notification templates by action type
+
+**Notifications are templated by action type.** Each action type maps to a
+notification template:
+
+```
+Notification Templates:
+  complete-form:
+    subject: "New assessment assigned: {task.name}"
+    body: "{assigner.name} assigned you an assessment for {folder.name}."
+    cta: "Start Assessment"
+
+  acknowledge-form:
+    subject: "Acknowledgement required: {task.name}"
+    body: "Please review and acknowledge {task.name} for {folder.name}."
+    cta: "Review & Acknowledge"
+
+  complete-training:
+    subject: "Training required: {task.name}"
+    body: "You are required to complete {task.name} for {folder.name}."
+    cta: "Start Training"
+```
+
+The template uses fields from the task (`name`, `action`, `reference`) and
+resolved context (`folder.name`, `assigner.name`). The Notification Service
+resolves folder names and assigner names from the Folder Service / User
+Service as needed — this is a read-time enrichment, not data stored on the
+task.
+
+**Why by action type, not caller-provided?** Because notification content
+should be consistent. Every "complete-form" notification should look the
+same, regardless of whether it was created by an admin, the Outcome Service,
+or a batch job. Consistency builds user trust — they learn to recognize
+task notifications.
+
+The caller **can** provide additional context via the task's `description`
+field, which the template can include. But the caller doesn't control the
+notification layout or template selection.
+
+### Reminder notifications
+
+**Yes — reminders are supported, configured at the campaign or template level.**
+
+Reminder configuration lives on the **campaign** (or defaults from the
+template):
+
+```
+Campaign:
+  ...
+  reminderPolicy:
+    enabled:     true
+    interval:    7 days          ← remind every 7 days
+    maxReminders: 3             ← stop after 3 reminders
+    escalateAfter: 21 days      ← after 3 reminders, notify the assigner
+```
+
+**Who owns reminders?**
+
+The **Notification Service** owns reminder scheduling and delivery. The
+Assignment Service doesn't run cron jobs or manage reminder state. The flow:
+
+1. When a task is created, the Assignment Service informs the Notification
+   Service (as part of the initial notification)
+2. The Notification Service schedules reminders based on the campaign's
+   reminder policy
+3. On each reminder interval, the Notification Service checks: is the task
+   still ASSIGNED?
+   - Yes → send reminder
+   - No (COMPLETED or UNASSIGNED) → cancel remaining reminders
+4. After `maxReminders`, optionally escalate to the assigner or admin
+
+```
+Notification Service (reminder scheduler):
+  on task.created:
+    if campaign.reminderPolicy.enabled:
+      scheduleReminder(task.id, campaign.reminderPolicy.interval)
+
+  on reminder.due:
+    task = AssignmentService.getTask(taskId)
+    if task.status == "ASSIGNED":
+      sendReminder(task)
+      if remindersCount < maxReminders:
+        scheduleNextReminder(task.id)
+      else if escalateAfter reached:
+        notifyAssigner(task, "task overdue")
+    else:
+      cancelReminders(task.id)
+```
+
+**Default policy:** If no campaign-level policy is set, the template can
+define a default reminder policy. If neither is set, no reminders are sent.
+Reminders are opt-in, not default — some assignments are time-sensitive
+and warrant reminders, others are ongoing obligations that don't need nagging.
+
+---
+
+## Task Data Model
+
+The concrete shape of a task record, incorporating all decisions above.
+
+```
+Task:
+  id:              string (uuid)
+  campaignId:      string (uuid, optional — null for ad-hoc tasks)
+
+  # Who
+  assignedTo:
+    userId:        string
+    name:          string
+    email:         string
+  assignedBy:
+    userId:        string
+    name:          string
+
+  # What
+  action:          string ("complete-form" | "acknowledge-form" | "complete-training" | ...)
+  reference:       JSON object (opaque to the assignment service, interpreted by consumer)
+  name:            string (required — human-readable display name)
+  description:     string (optional — contextual detail)
+
+  # Where
+  folderId:        string (organizational unit this task belongs to)
+
+  # When
+  assignedOn:      timestamp
+  completedOn:     timestamp (null until completed)
+  unassignedOn:    timestamp (null unless unassigned)
+  unassignedBy:    { userId, name } (null unless unassigned)
+
+  # State
+  status:          "ASSIGNED" | "COMPLETED" | "UNASSIGNED"
+
+  # Metadata
+  createdAt:       timestamp
+  updatedAt:       timestamp
+```
+
+### Field notes
+
+**`assignedTo` vs `subject`:** Some task types have a subject — the person
+the form is *about* — who differs from the assignee. For example, an ergo
+evaluation where the Ergonomist (assignee) evaluates an Employee (subject).
+When needed, the subject goes in the `reference`:
+
+```
+action:    "complete-form"
+reference: {
+  templateGroupId: "ergo-evaluation-v1",
+  templateId:      "ergo-evaluation-v1.2",
+  subjectUserId:   "employee-123",
+  subjectName:     "Jane Doe"
+}
+```
+
+This keeps the Task schema stable — `assignedTo` is always "who does the
+work" and any role-specific participants live in the reference.
+
+**`campaignId` is optional.** Ad-hoc tasks (a PI manually assigns a single
+acknowledgement to a new member) don't belong to a campaign. The field is
+null. Campaign-based queries simply skip these. The `campaignId` is not
+required for core task operations — it's a grouping convenience.
+
+**`unassignedBy` and `unassignedOn`:** These fields populate when a task
+moves to UNASSIGNED. They provide the audit trail for compliance: who revoked
+the task and when. Combined with `assignedBy` and `assignedOn`, the full
+history of the task's lifecycle is captured without a separate audit log.
+
+### Indexes
+
+The query patterns from the "Querying Tasks" section drive the indexes:
+
+```
+Indexes:
+  (assignedTo.userId, status)                     → tasksByUser
+  (folderId, action, status)                      → tasksByFolder + type filter
+  (reference.templateGroupId, action, status)      → tasksByTemplate (requires JSON index)
+  (assignedBy.userId, status)                      → tasksByAssigner
+  (campaignId, status)                             → tasksByCampaign
+  (folderId, campaignId)                           → late-joiner checks
+  (status, assignedOn)                             → reconciliation queries, overdue tasks
+```
+
+### Campaign record
+
+```
+Campaign:
+  id:              string (uuid)
+  name:            string ("Q1 2025 Lab Safety Assessment")
+  initiatedBy:
+    userId:        string
+    name:          string
+  initiatedOn:     timestamp
+  templateGroupId: string (the template that started the campaign)
+  targetFolderId:  string (the parent folder targeted)
+  status:          "ACTIVE" | "COMPLETED" | "CANCELLED"
+  reminderPolicy:
+    enabled:       boolean
+    intervalDays:  number
+    maxReminders:  number
+    escalateAfterDays: number (optional)
+  createdAt:       timestamp
+  updatedAt:       timestamp
+```
+
+### Outcome Rule record
+
+```
+OutcomeRule:
+  id:              string (uuid)
+  templateGroupId: string (which template this rule applies to)
+  condition:       JSON (expression evaluated against form answers)
+  outcomeType:     string ("require-acknowledgement" | "require-training" | ...)
+  config:          JSON (outcome-specific configuration)
+    # For require-acknowledgement:
+    #   { targetRole: "member" }  ← who in the folder gets the task
+    # For require-training:
+    #   { courseId: "hazmat-101", courseName: "Hazardous Materials Training" }
+  enabled:         boolean
+  createdAt:       timestamp
+  updatedAt:       timestamp
+```
+
+---
+
+## End-to-End Event Flow
+
+Walking through the full scenario from the opening section, now with all
+design decisions applied.
+
+### Phase 1: Admin initiates campaign
+
+```
+Program Manager clicks "Assign Lab Safety Assessment to all labs"
+
+BFF:
+  1. Create campaign
+     campaign = AssignmentService.createCampaign({
+       name: "Q1 2025 Lab Safety Assessment",
+       initiatedBy: programManager,
+       templateGroupId: "lab-safety-assessment-v2",
+       targetFolderId: "lab-safety-program",
+       reminderPolicy: { enabled: true, intervalDays: 7, maxReminders: 3 }
+     })
+
+  2. Resolve targets
+     children = FolderService.getChildFolders("lab-safety-program")
+     // → [Lab 1, Lab 2, Lab 3]
+
+  3. Build task list
+     tasks = []
+     for each child:
+       pis = FolderService.getRoleMembers(child.id, "PI")
+       for each pi:
+         tasks.push({
+           campaignId: campaign.id,
+           assignedTo: pi,
+           assignedBy: programManager,
+           action: "complete-form",
+           reference: {
+             templateGroupId: "lab-safety-assessment-v2",
+             templateId: "lab-safety-assessment-v2.3"   ← pinned version
+           },
+           name: "Lab Safety Assessment",
+           folderId: child.id
+         })
+
+  4. Create tasks in bulk
+     AssignmentService.createTasks(tasks)
+     // → 3 tasks created (Alice/Lab1, Dave/Lab2, Frank/Lab3)
+     // → 3 notification events queued
+```
+
+### Phase 2: PI completes assessment
+
+```
+Alice clicks the notification link → /tasks/{task-id}
+
+Task Landing Page (UI):
+  1. Read task
+     task = AssignmentService.getTask(taskId)
+     // action: "complete-form", reference: { templateGroupId, templateId }
+
+  2. Create or retrieve form
+     form = FormService.createForm({
+       templateId: task.reference.templateId,
+       userId: task.assignedTo.userId,
+       folderId: task.folderId,
+       taskId: task.id,
+       campaignId: task.campaignId       ← threaded through
+     })
+
+  3. Redirect to form
+     → /forms/{form.id}
+
+Alice fills out the form and clicks Submit
+
+Form Service (server-side):
+  1. Store answers
+  2. Mark task complete
+     AssignmentService.completeTask(task.id)
+  3. Emit event
+     emit "form.completed" {
+       formId: form.id,
+       templateGroupId: "lab-safety-assessment-v2",
+       completedBy: "alice",
+       folderId: "lab-1",
+       campaignId: "campaign-abc",
+       answers: { ... }
+     }
+  4. Return success to Alice
+     // Alice sees "Assessment submitted" immediately
+```
+
+### Phase 3: Outcome evaluation (async)
+
+```
+Outcome Service receives "form.completed" event
+
+  1. Check idempotency
+     if alreadyProcessed(formId): skip
+
+  2. Load rules for this template
+     rules = OutcomeRules.findByTemplateGroup("lab-safety-assessment-v2")
+
+  3. Evaluate each rule against the form answers
+     Rule 1: "require-acknowledgement"
+       condition: answers.requiresAcknowledgement == true
+       → Alice checked "yes" → MATCHES
+
+     Rule 2: "require-training"
+       condition: answers.chemicalClass in ["3", "4", "5"]
+       → Alice reported Class 1 → DOES NOT MATCH
+
+  4. Execute matching outcomes
+
+     Outcome: require-acknowledgement
+       members = FolderService.getRoleMembers("lab-1", "member")
+       // → [Bob, Carol]
+       for each member:
+         AssignmentService.createTask({
+           campaignId: "campaign-abc",       ← same campaign
+           assignedTo: member,
+           assignedBy: { system/outcome },
+           action: "acknowledge-form",
+           reference: { formId: form.id },
+           name: "Acknowledge Lab 1 Safety Assessment",
+           description: "Review and acknowledge the safety assessment completed by Alice",
+           folderId: "lab-1"
+         })
+
+  5. Mark outcomes as processed
+     markProcessed(formId, rule1.id)
+```
+
+### Phase 4: Member acknowledges
+
+```
+Bob receives notification → /forms/{formId}/acknowledge
+
+Form Service:
+  1. Display the completed form (read-only) with acknowledgement action
+  2. Bob clicks "I acknowledge"
+  3. Store acknowledgement record
+  4. Mark task complete
+     AssignmentService.completeTask(bobsTaskId)
+  5. Return success
+
+Carol has not yet acknowledged → her task remains ASSIGNED
+```
+
+### Phase 5: Tracking queries
+
+```
+Program Manager opens dashboard
+
+BFF:
+  // Assessment progress
+  assessments = AssignmentService.tasksByCampaign("campaign-abc", type: "complete-form")
+  // → Lab 1: COMPLETED (Alice), Lab 2: COMPLETED (Dave), Lab 3: ASSIGNED (Frank)
+
+  // Acknowledgement progress (only for labs where outcomes created tasks)
+  ackTasks = AssignmentService.tasksByCampaign("campaign-abc", type: "acknowledge-form")
+  // → Lab 1: Bob COMPLETED, Carol ASSIGNED (1/2)
+  //   Lab 2: (none — no acknowledgement outcome)
+  //   Lab 3: (none — assessment not yet completed)
+
+Dashboard renders:
+  ┌──────────────────────────────────────────────────────┐
+  │ Q1 2025 Lab Safety Assessment                        │
+  │                                                      │
+  │         Assessment    Acknowledgement    Training     │
+  │ Lab 1   ✅ Complete    ⏳ 1/2            —           │
+  │ Lab 2   ✅ Complete    —                 —           │
+  │ Lab 3   ⏳ Pending     —                 —           │
+  └──────────────────────────────────────────────────────┘
+```
+
+### Phase 6: Late-joiner (V2)
+
+```
+Ivan joins Lab 1 as a new member
+
+Folder Service emits "member.added" { folderId: "lab-1", userId: "ivan" }
+
+Late-Joiner Listener:
+  1. Query active campaigns for Lab 1
+     campaigns = AssignmentService.activeCampaignsForFolder("lab-1")
+     // → campaign-abc is ACTIVE
+
+  2. Check what tasks exist for Lab 1 in this campaign
+     // Lab 1 has acknowledge-form tasks (from the outcome)
+     // Ivan doesn't have one yet
+
+  3. Create task for Ivan
+     AssignmentService.createTask({
+       campaignId: "campaign-abc",
+       assignedTo: ivan,
+       action: "acknowledge-form",
+       reference: { formId: "form-abc-123" },
+       name: "Acknowledge Lab 1 Safety Assessment",
+       folderId: "lab-1"
+     })
+
+Dashboard now shows:
+  Lab 1 Acknowledgement: ⏳ 1/3 (Bob ✅, Carol pending, Ivan pending)
+```
+
+---
+
+## Revised API Surface
+
+Incorporating all design decisions, the full API surface of the Assignment
+Service:
+
+```
+Commands:
+  createCampaign(name, initiatedBy, templateGroupId, targetFolderId, reminderPolicy?)
+    → Campaign
+
+  createTask(campaignId?, assignedTo, assignedBy, action, reference, name, description?, folderId)
+    → Task
+
+  createTasks([...taskRequests])
+    → [Task]                     (bulk variant)
+
+  completeTask(taskId)
+    → Task
+
+  unassignTask(taskId, unassignedBy)
+    → Task
+
+  cancelCampaign(campaignId, cancelledBy)
+    → Campaign                   (bulk-unassigns all ASSIGNED tasks)
+
+Queries:
+  getTask(taskId)                                     → Task
+  tasksByUser(userId, status?, action?)                → [Task]
+  tasksByFolder(folderId, status?, action?)            → [Task]
+  tasksByTemplate(templateGroupId, status?, action?)   → [Task]
+  tasksByAssigner(userId, status?, action?)             → [Task]
+  tasksByCampaign(campaignId, status?, action?)        → [Task]
+  activeCampaignsForFolder(folderId)                   → [Campaign]
+
+Events emitted:
+  task.created    { taskId, campaignId, action, assignedTo, folderId }
+  task.completed  { taskId, campaignId, action, assignedTo, folderId }
+  task.unassigned { taskId, campaignId, action, unassignedBy }
+```
+
+### What the Assignment Service still doesn't know
+
+Even with campaigns and bulk operations, the Assignment Service remains
+intentionally ignorant of:
+
+- What a `templateGroupId` is or how to create a form from it
+- What a `courseId` is or where the training platform lives
+- How the folder hierarchy is structured or who belongs to which folder
+- Why a task exists or what triggered its creation
+- What outcomes mean or how form answers are interpreted
+
+It stores tasks. It tracks state. It sends notifications. Everything else
+is someone else's problem.
+
+---
+
+## Summary of Design Positions
+
+| # | Question | Position |
+|---|----------|----------|
+| 1 | What does the Outcome Service look like? | Standalone service; rules configured per template |
+| 2 | How does it know the folder context? | Context threaded from task → form → completion event |
+| 3 | Can a form produce multiple outcomes? | Yes, evaluated and executed independently |
+| 4 | Immediate or eventual outcomes? | Eventual (async) with idempotency |
+| 5 | Who marks a task complete? | Consumer does — Form Service server-side callback |
+| 6 | Training completion flow? | Adapter (webhook/polling) or user self-report for MVP |
+| 7 | Out-of-sync task/consumer state? | Eventual consistency + periodic reconciliation |
+| 8 | Reference schema: typed or JSON? | Opaque JSON — assignment service doesn't validate semantics |
+| 9 | Template version pinning? | Store both templateGroupId and templateId; pin at assignment |
+| 10 | Human-readable display fields? | Yes — `name` (required) and `description` (optional) on task |
+| 11 | Who coordinates fan-out? | BFF / orchestration layer — not Folder or Assignment Service |
+| 12 | Bulk operations? | Yes — `createTasks` batch endpoint with async notifications |
+| 13 | Late-joiners? | Membership-change events trigger backfill (V2); manual for V1 |
+| 14 | Re-assignment? | Unassign + create new task; no mutation of assignedTo |
+| 15 | Full completion as derived status? | Computed on query — no materialized rollup |
+| 16 | Cross-type progress tracking? | Separate queries per action type, displayed side by side |
+| 17 | Campaign entity? | Yes — lightweight grouping mechanism, not a workflow engine |
+| 18 | Notification links? | URL builder resolves from action + reference; task landing page |
+| 19 | Notification customization? | Templated by action type; caller adds context via description |
+| 20 | Reminder notifications? | Yes — Notification Service owns scheduling; campaign configures policy |
